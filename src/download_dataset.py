@@ -29,18 +29,49 @@ def configure_logging(log_level: str = "INFO") -> None:
     )
 
 
+def _load_kaggle_token_from_registry() -> str | None:
+    """Read KAGGLE_API_TOKEN from Windows user-level environment variables.
+
+    Returns:
+        The token string, or None if not found or not on Windows.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
+            value, _ = winreg.QueryValueEx(key, "KAGGLE_API_TOKEN")
+            return str(value)
+    except (FileNotFoundError, OSError):
+        return None
+
+
 def validate_kaggle_token() -> None:
-    """Verify KAGGLE_API_TOKEN is set in the environment.
+    """Ensure KAGGLE_API_TOKEN is available to the current process.
+
+    Checks ``os.environ`` first. On Windows, falls back to reading the
+    user-level registry (variables set via ``SetEnvironmentVariable``
+    are not inherited by already-running shells).
 
     Raises:
-        EnvironmentError: If the token is missing.
+        EnvironmentError: If the token cannot be found anywhere.
     """
-    if not os.environ.get("KAGGLE_API_TOKEN"):
-        raise EnvironmentError(
-            "KAGGLE_API_TOKEN environment variable is not set. "
-            "Export it as: export KAGGLE_API_TOKEN='{\"username\":\"...\",\"key\":\"...\"}'"
-        )
-    logger.info("KAGGLE_API_TOKEN found in environment")
+    if os.environ.get("KAGGLE_API_TOKEN"):
+        logger.info("KAGGLE_API_TOKEN found in process environment")
+        return
+
+    registry_token = _load_kaggle_token_from_registry()
+    if registry_token:
+        os.environ["KAGGLE_API_TOKEN"] = registry_token
+        logger.info("KAGGLE_API_TOKEN loaded from Windows user environment")
+        return
+
+    raise EnvironmentError(
+        "KAGGLE_API_TOKEN not found. Set it with:\n"
+        '  PowerShell: $env:KAGGLE_API_TOKEN=\'{"username":"...","key":"..."}\'\n'
+        "  Or permanently: [System.Environment]::SetEnvironmentVariable("
+        "'KAGGLE_API_TOKEN', '{...}', 'User')"
+    )
 
 
 def download_dataset() -> Path:

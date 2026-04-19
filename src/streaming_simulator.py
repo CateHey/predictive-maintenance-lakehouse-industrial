@@ -33,7 +33,7 @@ CMAPSS_COLUMNS: list[str] = [
 _shutdown_requested: bool = False
 
 
-def _handle_sigint(signum: int, frame: Any) -> None:
+def _handle_sigint(_signum: int, _frame: Any) -> None:
     """Set shutdown flag on SIGINT for graceful termination."""
     global _shutdown_requested
     _shutdown_requested = True
@@ -205,7 +205,7 @@ def run_simulator(
             batch_number -= 1
             break
 
-        file_path = write_batch(batch, output_dir, batch_number)
+        write_batch(batch, output_dir, batch_number)
         total_records += len(batch)
 
         logger.info(
