@@ -5,7 +5,7 @@ Three-tab interface for mining operations equipment health:
 2. Unit Health Deep Dive — sensor time series, RUL gauge, degradation trajectory
 3. Predictions & Alerts — color-coded table, CSV export, severity breakdown
 
-Reads from local parquet files exported from Databricks Gold Delta table.
+Reads from data/gold/features_rul.parquet (exported from Databricks Gold Delta).
 Falls back to raw FD001 data with on-the-fly feature engineering for demos.
 """
 
@@ -13,16 +13,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from loguru import logger
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-GOLD_PATH = DATA_DIR / "gold"
-RAW_PATH = DATA_DIR / "raw" / "train_FD001.txt"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+GOLD_PARQUET = PROJECT_ROOT / "data" / "gold" / "features_rul.parquet"
+RAW_PATH = PROJECT_ROOT / "data" / "raw" / "train_FD001.txt"
 
 CMAPSS_COLUMNS: list[str] = [
     "unit_id", "cycle",
@@ -38,7 +37,6 @@ RISK_COLORS: dict[str, str] = {
 
 CUSTOM_CSS = """
 <style>
-    /* KPI card styling */
     div[data-testid="stMetric"] {
         background-color: #1E293B;
         border: 1px solid #334155;
@@ -57,7 +55,6 @@ CUSTOM_CSS = """
         font-size: 1.8rem;
         font-weight: 700;
     }
-    /* Tab styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
@@ -65,13 +62,11 @@ CUSTOM_CSS = """
         padding: 8px 20px;
         border-radius: 6px 6px 0 0;
     }
-    /* Table header */
     thead tr th {
         background-color: #1E293B !important;
         color: #E2E8F0 !important;
         font-weight: 600;
     }
-    /* Sidebar title */
     section[data-testid="stSidebar"] h1 {
         font-size: 1.2rem;
         color: #F59E0B;
@@ -84,27 +79,32 @@ CUSTOM_CSS = """
 def load_data() -> pd.DataFrame:
     """Load sensor data from Gold parquet or raw FD001 with fallback features.
 
-    Returns:
-        DataFrame with sensor readings, engineered features, and RUL labels.
-    """
-    parquet_files = list(GOLD_PATH.glob("*.parquet")) if GOLD_PATH.exists() else []
+    Attempts to load the Gold parquet file first (exported from Databricks).
+    If not found, falls back to raw train_FD001.txt with on-the-fly RUL
+    computation and basic rolling features for demo purposes.
 
-    if parquet_files:
-        df = pd.read_parquet(GOLD_PATH)
-        logger.info(f"Loaded Gold parquet: {len(df)} records from {GOLD_PATH}")
+    Returns:
+        DataFrame with sensor readings and RUL labels.
+    """
+    if GOLD_PARQUET.exists():
+        df = pd.read_parquet(GOLD_PARQUET)
+        logger.info(
+            "Loaded Gold parquet: {n} records, {u} units from {p}",
+            n=len(df), u=df["unit_id"].nunique(), p=GOLD_PARQUET.name,
+        )
         return df
 
-    logger.info("Gold parquet not found — falling back to raw FD001 data")
+    logger.info("Gold parquet not found at {p} — falling back to raw FD001", p=GOLD_PARQUET)
 
     if not RAW_PATH.exists():
         st.error(
-            f"No data found. Place `train_FD001.txt` in `{DATA_DIR / 'raw'}` "
-            f"or export Gold Delta as parquet to `{GOLD_PATH}`."
+            f"No data found.\n\n"
+            f"**Option A:** Export Gold Delta from Databricks as parquet to `{GOLD_PARQUET}`\n\n"
+            f"**Option B:** Place `train_FD001.txt` in `{RAW_PATH.parent}`"
         )
         st.stop()
 
     df = pd.read_csv(RAW_PATH, sep=r"\s+", header=None, names=CMAPSS_COLUMNS)
-
     max_cycles = df.groupby("unit_id")["cycle"].transform("max")
     df["rul"] = (max_cycles - df["cycle"]).clip(upper=125).astype(int)
 
@@ -115,7 +115,7 @@ def load_data() -> pd.DataFrame:
             .transform(lambda x: x.rolling(5, min_periods=1).mean())
         )
 
-    logger.info(f"Loaded raw FD001: {len(df)} records, {df['unit_id'].nunique()} units")
+    logger.info("Loaded raw FD001: {n} records, {u} units", n=len(df), u=df["unit_id"].nunique())
     return df
 
 
@@ -219,7 +219,9 @@ def render_fleet_overview(df: pd.DataFrame, latest: pd.DataFrame) -> None:
 
     with col_right:
         st.subheader("Risk Breakdown")
-        risk_counts = latest["risk_level"].value_counts().reindex(["CRITICAL", "WARNING", "HEALTHY"], fill_value=0)
+        risk_counts = latest["risk_level"].value_counts().reindex(
+            ["CRITICAL", "WARNING", "HEALTHY"], fill_value=0,
+        )
         fig_pie = px.pie(
             values=risk_counts.values,
             names=risk_counts.index,
@@ -273,7 +275,13 @@ def render_unit_deep_dive(df: pd.DataFrame) -> None:
 
     with gauge_col:
         st.subheader("RUL Gauge")
-        gauge_color = "#EF4444" if current_rul < 50 else "#F59E0B" if current_rul < 100 else "#10B981"
+        if current_rul < 50:
+            gauge_color = "#EF4444"
+        elif current_rul < 100:
+            gauge_color = "#F59E0B"
+        else:
+            gauge_color = "#10B981"
+
         fig_gauge = go.Figure(go.Indicator(
             mode="gauge+number",
             value=current_rul,
@@ -363,7 +371,7 @@ def render_predictions_alerts(latest: pd.DataFrame) -> None:
     with severity_col:
         st.subheader("Alert Count by Severity")
         severity_counts = latest["risk_level"].value_counts().reindex(
-            ["CRITICAL", "WARNING", "HEALTHY"], fill_value=0
+            ["CRITICAL", "WARNING", "HEALTHY"], fill_value=0,
         )
         sev_col1, sev_col2, sev_col3 = st.columns(3)
         sev_col1.markdown(
@@ -403,7 +411,7 @@ def render_predictions_alerts(latest: pd.DataFrame) -> None:
     | Color | RUL Range | Action Required |
     |-------|-----------|-----------------|
     | Red | < 50 cycles | Immediate maintenance — pull from service |
-    | Yellow | 50–100 cycles | Schedule maintenance window this rotation |
+    | Yellow | 50-100 cycles | Schedule maintenance window this rotation |
     | Green | > 100 cycles | Normal operations — continue monitoring |
     """)
 
