@@ -54,3 +54,6 @@ logs/
 .env
 *.pem
 *.key
+
+#internal
+internal/
